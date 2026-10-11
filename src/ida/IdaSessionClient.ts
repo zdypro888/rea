@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { setTimeout } from "node:timers/promises";
 import {
   createAnalysisExecution,
   type AnalysisClient,
@@ -11,6 +12,7 @@ import {
   AnalysisProtocolError,
   AnalysisOutputError,
   AnalysisInputError,
+  AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
@@ -35,6 +37,7 @@ import {
   databaseListSchema,
   legacyMetadataSchema,
   modernHealthSchema,
+  modernBusyHealthSchema,
   openDatabaseSchema,
 } from "./IdaProtocolValues.js";
 import {
@@ -189,7 +192,7 @@ export class IdaSessionClient implements AnalysisClient {
       if (wasCancelled(options))
         return err(new AnalysisCancelledError(operation));
       if (operation === "health") {
-        const metadata = await this.#observe();
+        const metadata = await this.#observe(options);
         if (wasCancelled(options))
           return err(new AnalysisCancelledError(operation));
         return this.#health(metadata);
@@ -201,7 +204,7 @@ export class IdaSessionClient implements AnalysisClient {
       const { result, runner, before, after, recovery } =
         await new IdaAnalysisRecovery(this.connection, this.config, {
           database: this.#database,
-          observe: () => this.#observe(),
+          observe: () => this.#observe(options),
         }).run(operation, parameters, options);
       return ok(
         createAnalysisExecution(result, IDA_PROVIDER_IDENTITY, {
@@ -340,7 +343,7 @@ export class IdaSessionClient implements AnalysisClient {
     }
   }
 
-  async #observe(): Promise<JsonValue> {
+  async #observe(options?: ExecutionOptions): Promise<JsonValue> {
     let identity: string;
     if (this.config.mode === "attached") {
       const raw = await this.connection.call("get_metadata", {});
@@ -360,9 +363,7 @@ export class IdaSessionClient implements AnalysisClient {
         throw new AnalysisProtocolError(
           "IDA headless session has no database binding.",
         );
-      const raw = await this.connection.call("server_health", {
-        database: this.#database,
-      });
+      const raw = await this.#headlessHealth(this.#database, options);
       const metadata = modernHealthSchema.parse(raw);
       if (
         !sameIdaHostPath(metadata.input_path, this.#workspace.inputPath) ||
@@ -388,6 +389,26 @@ export class IdaSessionClient implements AnalysisClient {
       );
     this.#initialIdentity = identity;
     return this.#metadata;
+  }
+
+  async #headlessHealth(
+    database: string,
+    options: ExecutionOptions | undefined,
+  ): Promise<JsonValue> {
+    const deadline = performance.now() + this.config.timeoutMs;
+    while (true) {
+      if (wasCancelled(options)) throw new AnalysisCancelledError("health");
+      const raw = await this.connection.call("server_health", { database });
+      if (!modernBusyHealthSchema.safeParse(raw).success) return raw;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0)
+        throw new AnalysisTimeoutError("health", this.config.timeoutMs);
+      // Give the worker a chance to clear its completed main-thread job. Busy
+      // metadata cannot establish input identity or analysis readiness.
+      await setTimeout(Math.min(10, remaining), undefined, {
+        ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      });
+    }
   }
 
   async close(): Promise<Result<null, AnalysisError>> {

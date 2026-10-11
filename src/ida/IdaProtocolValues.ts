@@ -48,6 +48,16 @@ export const modernHealthSchema = z
   })
   .passthrough();
 
+/** Busy replies intentionally omit database identity; never treat them as ready. */
+export const modernBusyHealthSchema = z
+  .object({
+    status: z.literal("busy"),
+    busy_tool: z.string(),
+    busy_sec: z.number().nonnegative(),
+    queued_calls: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
 /** An upstream cursor must either finish or advance strictly to avoid replay loops. */
 export const cursorSchema = z.union([
   z.object({ next: z.number().int().nonnegative() }),

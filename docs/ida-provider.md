@@ -116,6 +116,10 @@ advance capability, unknown readiness, nonprogressing queues, or changed identit
 rejects the result rather than bypassing readiness. Health probes report pending
 state without advancing analysis. No attached GUI analysis is advanced.
 
+Transient `busy` health replies omit target identity. REA waits within the
+configured timeout for a complete health reply before validating identity and
+readiness. A persistent busy state times out; it is never accepted as ready.
+
 The legacy profile additionally supports direct callers. Its producer may report call-site or interior addresses; REA resolves the reported function symbol to its canonical entry. The modern profile does not prove direct callers from its code/data xref labels, so that capability is unavailable and the dossier marks it unknown.
 
 Complete body ranges, typed reference edges, CFG, referenced data, source locals, comment kinds, and database revision are unavailable. Empty unsupported dossier facets mean **unknown**, not observed absence. `binary_overview`, whole-symbol inventory, mutation, debugging, arbitrary Python forwarding, and GUI navigation are outside this adapter's coverage. Check session availability before composing a workflow that needs those facets.

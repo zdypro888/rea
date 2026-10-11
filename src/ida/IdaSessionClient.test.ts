@@ -81,6 +81,48 @@ const recoveryFixture = async (timeoutMs = 1000) => {
 };
 
 describe("headless IDA analysis recovery", () => {
+  it("waits for transient busy health before checking the full database identity", async () => {
+    const { producer, client } = await fixture("headless");
+    let probes = 0;
+    producer.overrideCall = (name) =>
+      name === "server_health" && probes++ === 0
+        ? {
+            status: "busy",
+            busy_tool: "decompile",
+            busy_sec: 0.01,
+            queued_calls: 0,
+          }
+        : undefined;
+    try {
+      const result = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      if (!result.ok) throw result.error;
+      expect(probes).toBeGreaterThan(1);
+      expect(result.value.result).toBe(producer.pseudocode);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("bounds persistent busy health and rejects a result without full identity", async () => {
+    const { producer, client } = await fixture("headless", 5);
+    producer.overrideCall = (name) =>
+      name === "server_health"
+        ? {
+            status: "busy",
+            busy_tool: "decompile",
+            busy_sec: 1,
+            queued_calls: 0,
+          }
+        : undefined;
+    try {
+      const result = await client.execute("health", {});
+      expect(!result.ok && result.error._tag).toBe("AnalysisTimeoutError");
+    } finally {
+      await client.close();
+    }
+  });
   it("does not accept health when the caller cancels during the probe", async () => {
     const { producer, client } = await recoveryFixture();
     const controller = new AbortController();
