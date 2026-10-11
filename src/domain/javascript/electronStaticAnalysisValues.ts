@@ -7,6 +7,26 @@ import {
   semanticStaticPropertyName,
 } from "./javascriptAstValues.js";
 import { sourceSlice } from "./javascriptStaticAnalysisHelpers.js";
+import type { JavaScriptFindingContext } from "./javascriptStaticAnalysisState.js";
+
+/** Resolve a callee only when its root has a proven Electron module identity. */
+export const electronCalleePath = (
+  callee: t.Node,
+  context: JavaScriptFindingContext,
+): readonly string[] | undefined => {
+  const members: string[] = [];
+  let root = callee;
+  while (t.isMemberExpression(root) || t.isOptionalMemberExpression(root)) {
+    const member = semanticStaticPropertyName(root.property, root.computed);
+    if (member === "" || !t.isNode(root.object)) return undefined;
+    members.push(member);
+    root = root.object;
+  }
+  const exported = context.electronBindings?.get(root.start ?? -1);
+  return exported === undefined
+    ? undefined
+    : [...exported, ...members.toReversed()];
+};
 
 /** Preserve one literal value or the exact inert expression. */
 export const electronStaticValue = (

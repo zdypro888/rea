@@ -1,5 +1,6 @@
 import type { DoctorReport, DoctorScope, runDoctor } from "./Doctor.js";
 import type { LinuxDistribution } from "./LinuxHopper.js";
+import type { SkillDestination } from "./SetupSkill.js";
 import type { SetupClient } from "./SupportedClients.js";
 import type {
   SetupFailureCode,
@@ -42,13 +43,15 @@ export type ClientConfigurationInspection =
 export interface SetupHost {
   readonly platform: NodeJS.Platform;
   readonly homeDirectory: string;
-  readonly claudeCodeSkillsDirectory: string;
+  skillDestinations(clientIds: readonly string[]): readonly SkillDestination[];
   readonly registrationCommand: readonly string[];
   readonly nodeVersion: string;
   macosVersion(): Promise<string | undefined>;
   linuxDistribution(): Promise<LinuxDistribution | undefined>;
   initialSetupState(scope?: DoctorScope): Promise<SetupInitialState>;
   installHopper(replaceExisting: boolean): Promise<SetupHopperInstallResult>;
+  /** Retry and report any cleanup resources still owned by this setup host. */
+  close?(): Promise<string | undefined>;
   detectedClients(): Promise<readonly SetupClient[]>;
   supportedClients(): Promise<readonly SetupClient[]>;
   configureClient(
@@ -154,6 +157,8 @@ export interface SetupOptions {
   readonly structured: boolean;
   readonly proposeHopper?: boolean;
   readonly clientIds?: readonly string[];
+  /** Skill roots to update independently of MCP registrations (maintenance). */
+  readonly skillClientIds?: readonly string[];
   readonly installSkill?: boolean;
   readonly readinessScope?: DoctorScope;
   readonly dryRun?: boolean;

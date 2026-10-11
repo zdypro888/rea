@@ -5,7 +5,7 @@ import {
   linuxHopperInstallDisclosure,
   type LinuxPackageFamily,
 } from "./LinuxHopper.js";
-import { skillDestinations } from "./SetupSkill.js";
+import type { SkillDestination } from "./SetupSkill.js";
 import { macHopperInstallDisclosure } from "./MacHopper.js";
 import type {
   SetupAction,
@@ -188,7 +188,7 @@ export const planSetupActions = async (input: {
       installHopper: input.discovery.installHopper,
       installSkill: input.installSkill,
       skillClientIds: input.skillClientIds,
-      claudeCodeSkillsDirectory: input.host.claudeCodeSkillsDirectory,
+      skillDestinations: input.host.skillDestinations(input.skillClientIds),
       clients: clientPlans,
       providerEnvironment: input.providerEnvironment,
       ...(input.discovery.linuxPackageFamily === undefined
@@ -210,7 +210,7 @@ const setupPlan = (input: {
   readonly installHopper: boolean;
   readonly installSkill: boolean;
   readonly skillClientIds: readonly string[];
-  readonly claudeCodeSkillsDirectory: string;
+  readonly skillDestinations: readonly SkillDestination[];
   readonly clients: readonly {
     readonly client: SetupClient;
     readonly operation: "create" | "update";
@@ -268,15 +268,8 @@ const setupPlan = (input: {
       ...(backupPath === undefined ? {} : { backupPath }),
     })),
   ...(input.installSkill
-    ? skillDestinations(
-        input.homeDirectory,
-        input.skillClientIds,
-        input.claudeCodeSkillsDirectory,
-      ).map(({ client, path }): SetupAction => ({
-        id:
-          client === "claude_code"
-            ? "install_skill:claude_code"
-            : "install_skill",
+    ? input.skillDestinations.map(({ client, path }): SetupAction => ({
+        id: client === "shared" ? "install_skill" : `install_skill:${client}`,
         kind: "install_skill",
         label:
           client === "claude_code"
@@ -319,8 +312,8 @@ const clientConfigurationDetail = (
     .map(([name, value]) => `${name}=${value}`);
   const environmentDetail =
     entries.length === 0
-      ? " No additional environment variables."
-      : ` Environment: ${entries.join(", ")}.`;
+      ? " No additional provider environment variables. Existing server environment overrides are retained."
+      : ` Detected provider environment: ${entries.join(", ")}. Existing server environment overrides are retained; detected values replace matching keys.`;
   const hopperDetail = installHopper
     ? environment.HOPPER_LAUNCHER_PATH === undefined
       ? " If this plan installs Hopper, REA will add HOPPER_LAUNCHER_PATH using the launcher path reported by that installation."

@@ -5,8 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
-import { analyzeJavaScriptApplication } from "../../../src/application/javascript/JavaScriptApplicationService.js";
-import { reconstructJavaScriptArtifact } from "../../../src/application/javascript/JavaScriptArtifactReconstruction.js";
+import { analyzeJavaScriptApplication } from "../../support/javascriptApplicationScope.js";
+import { reconstructJavaScriptArtifact } from "../../support/javascriptApplicationScope.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import { parseJavaScriptApplicationGraph } from "../../../src/domain/javascript/javascriptApplicationGraph.js";
 import { analyzeJavaScriptApplicationInputSchema } from "../../../src/domain/javascript/javascriptApplicationAnalysis.js";
@@ -72,12 +72,16 @@ describe("static Electron application analysis", () => {
 
     const result = await reconstructJavaScriptArtifact({ input_path: root });
     const graph = parseJavaScriptApplicationGraph(result.graph);
-    const requestedMembers = graph.nodes.flatMap((node) =>
+    // Computed access keeps no known members; the unknown access is an
+    // explicit dynamic flag rather than a "*" sentinel inside members.
+    const accesses = graph.nodes.flatMap((node) =>
       node.kind === "native-export"
-        ? node.observations.flatMap(({ properties }) => {
-            const members = properties.requested_members;
-            return Array.isArray(members) ? members : [];
-          })
+        ? node.observations.map(({ properties }) => ({
+            members: Array.isArray(properties.requested_members)
+              ? properties.requested_members
+              : [],
+            dynamicMemberAccess: properties.dynamic_member_access ?? false,
+          }))
         : [],
     );
 
@@ -86,7 +90,46 @@ describe("static Electron application analysis", () => {
       native_addon_bindings: 1,
       resolved_native_addon_bindings: 1,
     });
-    expect(requestedMembers).toEqual(["*"]);
+    expect(accesses).toEqual([{ members: [], dynamicMemberAccess: true }]);
+  });
+
+  it("maps Electron boundaries through bundler-renamed bindings", async () => {
+    const root = await renamedBindingFixtureDirectory();
+
+    const result = await reconstructJavaScriptArtifact({ input_path: root });
+    const graph = parseJavaScriptApplicationGraph(result.graph);
+    const handledChannels = graph.nodes.flatMap(({ kind, observations }) =>
+      kind === "ipc-handler"
+        ? observations.flatMap(({ properties }) =>
+            properties.side === "main" ? [properties.channel] : [],
+          )
+        : [],
+    );
+
+    expect(result.electron_summary).toMatchObject({
+      browser_windows: 1,
+      context_bridge_apis: 1,
+      exposed_api_members: 2,
+      ipc: {
+        main_handlers: 2,
+        paired_renderer_transmissions: 2,
+        unpaired_literal_renderer_transmissions: 0,
+      },
+      utility_processes: 1,
+    });
+    expect(handledChannels.sort()).toEqual(["rea:read", "rea:write"]);
+  });
+
+  it("maps unchanged var and let require aliases while excluding reassigned bindings", async () => {
+    const root = await requireAliasFixtureDirectory();
+
+    const result = await reconstructJavaScriptArtifact({ input_path: root });
+
+    expect(result.electron_summary.ipc).toMatchObject({
+      main_handlers: 2,
+      paired_renderer_transmissions: 2,
+      unpaired_literal_renderer_transmissions: 0,
+    });
   });
 
   it("returns a tagged cancellation without executing application code", async () => {
@@ -296,6 +339,89 @@ const expectElectronBoundaries = (graph: ApplicationGraph): void => {
 const fixtureDirectory = async (): Promise<string> => {
   const root = await createTestTempDirectory("rea-electron-boundaries-");
   await writeElectronBoundaryFixture(root);
+  return root;
+};
+
+const requireAliasFixtureDirectory = async (): Promise<string> => {
+  const root = await createTestTempDirectory("rea-electron-require-aliases-");
+  await Promise.all([
+    writeFile(
+      join(root, "package.json"),
+      JSON.stringify({
+        name: "rea-electron-require-aliases",
+        main: "main.cjs",
+      }),
+    ),
+    writeFile(
+      join(root, "main.cjs"),
+      String.raw`
+var { ipcMain: main } = require("electron");
+let listener = require("electron/main").ipcMain;
+main.handle("rea:read", async () => "value");
+listener.on("rea:write", () => undefined);
+
+let replaced = require("electron").ipcMain;
+replaced = { handle() {} };
+replaced.handle("rea:reassigned", () => undefined);
+
+var assignedLater;
+assignedLater.handle("rea:before-assignment", () => undefined);
+assignedLater = require("electron").ipcMain;
+
+if (globalThis.registerIpc) {
+  var conditional = require("electron").ipcMain;
+}
+conditional.handle("rea:conditional", () => undefined);
+`,
+    ),
+    writeFile(
+      join(root, "preload.cjs"),
+      String.raw`
+const { ipcRenderer } = require("electron");
+ipcRenderer.invoke("rea:read");
+ipcRenderer.send("rea:write", "value");
+`,
+    ),
+  ]);
+  return root;
+};
+
+const renamedBindingFixtureDirectory = async (): Promise<string> => {
+  const root = await createTestTempDirectory("rea-electron-renamed-");
+  await Promise.all([
+    writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ name: "rea-electron-renamed", main: "main.mjs" }),
+    ),
+    // Bundlers rename colliding imports, e.g. esbuild's ipcMain2.
+    writeFile(
+      join(root, "main.mjs"),
+      String.raw`
+import { BrowserWindow as BrowserWindow2, ipcMain as ipcMain2 } from "electron";
+import { ipcMain as ipcMain3, utilityProcess as utility } from "electron/main";
+
+new BrowserWindow2({ webPreferences: { preload: "./preload.cjs" } });
+ipcMain2.handle("rea:read", async () => "value");
+ipcMain3.on("rea:write", () => undefined);
+utility.fork("./worker.js");
+function register(ipcMain2) {
+  ipcMain2.handle("rea:shadowed", async () => "local");
+}
+export { register };
+`,
+    ),
+    writeFile(
+      join(root, "preload.cjs"),
+      String.raw`
+const { contextBridge: bridge, ipcRenderer: ipc } = require("electron");
+bridge.exposeInMainWorld("reaApi", {
+  read: () => ipc.invoke("rea:read"),
+  write: (value) => ipc.send("rea:write", value),
+});
+`,
+    ),
+    writeFile(join(root, "worker.js"), "module.exports = {};"),
+  ]);
   return root;
 };
 

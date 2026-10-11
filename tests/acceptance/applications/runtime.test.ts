@@ -144,6 +144,8 @@ describe("production stdio runtime", () => {
       expect(evidence.operation).toBe("current_document");
       expect(evidence.provider.id).toBe("hopper");
       expect(evidence.normalized_result).toBe(observation.normalized_result);
+      // Hopper's reply is the result; it is not repeated as raw_result.
+      expect(evidence.raw_result).toBeNull();
       expect(records).toContainEqual(
         expect.objectContaining({
           application: "rea",
@@ -216,7 +218,10 @@ describe("production stdio runtime", () => {
         record.level >= 50,
     );
     expect(fatal).toEqual([]);
-  }, 15_000);
+    // Full catalog discovery and first-call SDK schema compilation take about
+    // 8–9 seconds on one local CPU; the 15-second budget repeatedly expired in
+    // parallel CI shards. Keep a finite budget for the complete workflow.
+  }, 30_000);
 
   it.runIf(process.platform === "darwin")(
     "serves a database-kind initial target without a fatal record on macOS",

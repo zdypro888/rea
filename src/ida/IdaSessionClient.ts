@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { setTimeout } from "node:timers/promises";
 import {
   createAnalysisExecution,
   type AnalysisClient,
@@ -12,7 +11,6 @@ import {
   AnalysisProtocolError,
   AnalysisOutputError,
   AnalysisInputError,
-  AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
@@ -26,6 +24,7 @@ import {
   IdaAnalysisRecovery,
   idaAnalysisReady,
 } from "./IdaAnalysisRecovery.js";
+import { readSettledHealth } from "./IdaBusyHealth.js";
 import {
   IDA_LIMITATIONS,
   IDA_OPERATIONS,
@@ -37,7 +36,6 @@ import {
   databaseListSchema,
   legacyMetadataSchema,
   modernHealthSchema,
-  modernBusyHealthSchema,
   openDatabaseSchema,
 } from "./IdaProtocolValues.js";
 import {
@@ -382,7 +380,11 @@ export class IdaSessionClient implements AnalysisClient {
         throw new AnalysisProtocolError(
           "IDA headless session has no database binding.",
         );
-      const raw = await this.#headlessHealth(this.#database, options);
+      const raw = await readSettledHealth(this.connection, {
+        database: this.#database,
+        timeoutMs: this.config.timeoutMs,
+        signal: options?.signal,
+      });
       const metadata = modernHealthSchema.parse(raw);
       if (
         !sameIdaHostPath(metadata.input_path, this.#workspace.inputPath) ||
@@ -408,26 +410,6 @@ export class IdaSessionClient implements AnalysisClient {
       );
     this.#initialIdentity = identity;
     return this.#metadata;
-  }
-
-  async #headlessHealth(
-    database: string,
-    options: ExecutionOptions | undefined,
-  ): Promise<JsonValue> {
-    const deadline = performance.now() + this.config.timeoutMs;
-    while (true) {
-      if (wasCancelled(options)) throw new AnalysisCancelledError("health");
-      const raw = await this.connection.call("server_health", { database });
-      if (!modernBusyHealthSchema.safeParse(raw).success) return raw;
-      const remaining = deadline - performance.now();
-      if (remaining <= 0)
-        throw new AnalysisTimeoutError("health", this.config.timeoutMs);
-      // Give the worker a chance to clear its completed main-thread job. Busy
-      // metadata cannot establish input identity or analysis readiness.
-      await setTimeout(Math.min(10, remaining), undefined, {
-        ...(options?.signal === undefined ? {} : { signal: options.signal }),
-      });
-    }
   }
 
   async close(): Promise<Result<null, AnalysisError>> {

@@ -1,9 +1,10 @@
-import {
-  type ClientConfigurationInspection,
-  type ClientConfigurationResult,
-  type SetupHost,
-  type SetupOptions,
-  type SetupProviderEnvironment,
+import { skillDestinations } from "./SetupSkill.js";
+import type {
+  ClientConfigurationInspection,
+  ClientConfigurationResult,
+  SetupHost,
+  SetupOptions,
+  SetupProviderEnvironment,
 } from "./SetupTypes.js";
 import type { SetupClient } from "./SupportedClients.js";
 import type { SetupHopperInstallResult } from "./SetupInstallFailure.js";
@@ -18,7 +19,9 @@ import { setupRegistrationCommand } from "./SetupHost.js";
 export class FakeSetupHost implements SetupHost {
   readonly platform: NodeJS.Platform;
   readonly homeDirectory = "/fixture/home";
-  readonly claudeCodeSkillsDirectory = "/fixture/home/.claude/skills";
+  skillDestinations(clientIds: readonly string[]) {
+    return skillDestinations(this.homeDirectory, clientIds);
+  }
   readonly registrationCommand: readonly string[];
   nodeVersion = "24.18.0";
   version: string | undefined = "14.5";

@@ -65,6 +65,8 @@ export const inspectCall = (
     addReference(context, { node, kind: "service-worker", specifier: first });
   inspectEndpointCall(node, name, first, context);
   inspectStorageCall(node, name, first, context);
+  if (first === "audio" || first === "video")
+    noteMediaElementPreloads(node, accumulator);
   if (name.endsWith("loadFile") && first !== undefined)
     addLocatedFinding(context, {
       collection: accumulator.roles,
@@ -93,6 +95,23 @@ export const inspectCall = (
         location: range(node),
       },
     });
+};
+
+// Element factories such as jsx("audio", props) and createElement("video",
+// props) carry the HTML media `preload` hint ("none", "metadata", "auto"),
+// which never names an Electron preload script.
+const noteMediaElementPreloads = (
+  node: JavaScriptCallLike,
+  accumulator: AnalysisAccumulator,
+): void => {
+  const props = node.arguments[1];
+  if (!t.isObjectExpression(props)) return;
+  for (const property of props.properties)
+    if (
+      t.isObjectProperty(property) &&
+      semanticStaticPropertyName(property.key, property.computed) === "preload"
+    )
+      accumulator.mediaElementPreloads.add(property);
 };
 
 const requireCallSpecifier = (
@@ -182,6 +201,13 @@ const inspectEndpointCall = (
     });
 };
 
+/** Record tRPC procedures, tRPC link URLs and named GraphQL operations. */
+export const inspectRpcNode = (node: t.Node, context: FindingContext): void => {
+  const rpc = context.rpcScan.inspect(node);
+  if (rpc !== undefined)
+    addEndpoint(context, { node, kind: "network", ...rpc });
+};
+
 export const inspectRouteProperty = (
   node: t.ObjectProperty,
   context: FindingContext,
@@ -201,6 +227,7 @@ export const inspectRoleProperty = (
   context: FindingContext,
 ): void => {
   if (semanticStaticPropertyName(node.key, node.computed) !== "preload") return;
+  if (context.accumulator.mediaElementPreloads.has(node)) return;
   const path = staticPath(node.value);
   if (path === undefined) return;
   addLocatedFinding(context, {
@@ -306,13 +333,34 @@ export const addSourceMapDirectives = (
       end === null
     )
       continue;
-    const match = /^(?:\/\/|\/\*)[#@]\s*sourceMappingURL\s*=\s*([^\s*]+)/u.exec(
-      source.slice(start, end),
-    );
-    if (match === null) continue;
-    const declared = match[1];
-    if (declared === undefined || declared.length === 0) continue;
-    const location = rangeForOffsets(source, start, start + match[0].length);
+    const commentSource = source.slice(start, end);
+    if (
+      !(commentSource.startsWith("//") || commentSource.startsWith("/*")) ||
+      !(commentSource[2] === "#" || commentSource[2] === "@")
+    )
+      continue;
+    // Single-class searches avoid regex backtracking over unbounded whitespace
+    // or inline URLs, which can exhaust the engine stack on two-byte strings.
+    const nameOffset = commentSource.slice(3).search(/\S/u);
+    if (nameOffset === -1) continue;
+    const nameStart = 3 + nameOffset;
+    if (!commentSource.startsWith("sourceMappingURL", nameStart)) continue;
+    const nameEnd = nameStart + "sourceMappingURL".length;
+    const equalsOffset = commentSource.slice(nameEnd).search(/\S/u);
+    if (equalsOffset === -1) continue;
+    const equalsStart = nameEnd + equalsOffset;
+    if (!commentSource.startsWith("=", equalsStart)) continue;
+    const urlOffset = commentSource.slice(equalsStart + 1).search(/\S/u);
+    if (urlOffset === -1) continue;
+    const declaredStart = equalsStart + 1 + urlOffset;
+    const terminator = commentSource
+      .slice(declaredStart)
+      .search(commentSource.startsWith("//") ? /\s/u : /[\s*]/u);
+    const declaredEnd =
+      terminator === -1 ? commentSource.length : declaredStart + terminator;
+    if (declaredEnd === declaredStart) continue;
+    const declared = commentSource.slice(declaredStart, declaredEnd);
+    const location = rangeForOffsets(source, start, start + declaredEnd);
     addFindingOnce(accumulator, `source-map\0${declared}`, () =>
       accumulator.sourceMaps.push({ declared_url: declared, location }),
     );

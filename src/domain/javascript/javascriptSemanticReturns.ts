@@ -26,10 +26,7 @@ import {
 import { evaluateSemanticExpression } from "./javascriptSemanticValues.js";
 import { range } from "./javascriptStaticAnalysisHelpers.js";
 import { semanticReturnCoverage } from "./javascriptSemanticCoverage.js";
-import {
-  childNodes,
-  traverseJavaScriptAst,
-} from "./javascriptSemanticTraversal.js";
+import { semanticCallableResultExpressions } from "./javascriptSemanticCallableResults.js";
 
 interface ReturnExpression {
   readonly node: t.Node | null;
@@ -38,13 +35,11 @@ interface ReturnExpression {
 
 /** Evaluate direct returns while excluding every nested callable. */
 export const collectSemanticReturns = (
-  program: t.Program,
   state: JavaScriptSemanticAnalysisState,
   parserPartial: boolean,
 ): JavaScriptSemanticCallable[] => {
-  const nodes = callableNodes(program);
   return state.callables.map((callable) => {
-    const node = nodes.get(callable.callableId);
+    const node = state.callableNodesById.get(callable.callableId);
     if (node === undefined)
       return {
         ...callable,
@@ -85,7 +80,14 @@ const semanticReturnSiteId = (
   callableId: string,
   location: JavaScriptSemanticReturnSite["location"],
 ): string =>
-  `${callableId}:return:${String(location.start.line)}:${String(location.start.column)}:${String(location.end.line)}:${String(location.end.column)}`;
+  [
+    callableId,
+    "return",
+    String(location.start.line),
+    String(location.start.column),
+    String(location.end.line),
+    String(location.end.column),
+  ].join(":");
 
 /** Link exports to callables only when lexical resolution is unique and exact. */
 export const resolveSemanticModuleCallables = (
@@ -112,36 +114,10 @@ export const resolveSemanticModuleCallables = (
   });
 };
 
-const callableNodes = (program: t.Program): Map<string, t.Node> => {
-  const output = new Map<string, t.Node>();
-  traverseJavaScriptAst(program, {
-    enter: (node) => {
-      const id = semanticCallableIdForNode(node);
-      if (id !== null) output.set(id, node);
-    },
-  });
-  return output;
-};
-
-const directReturnExpressions = (callable: t.Node): ReturnExpression[] => {
-  if (
-    t.isArrowFunctionExpression(callable) &&
-    !t.isBlockStatement(callable.body)
-  )
-    return [{ node: callable.body, location: range(callable.body) }];
-  if (!t.isFunction(callable)) return [];
-  const output: ReturnExpression[] = [];
-  const visit = (node: t.Node): void => {
-    if (t.isFunction(node) || t.isClass(node)) return;
-    if (t.isReturnStatement(node)) {
-      output.push({ node: node.argument ?? null, location: range(node) });
-      return;
-    }
-    for (const child of childNodes(node)) visit(child);
-  };
-  for (const child of childNodes(callable.body)) visit(child);
-  return output;
-};
+const directReturnExpressions = (callable: t.Node): ReturnExpression[] =>
+  semanticCallableResultExpressions(callable)
+    .filter(({ kind }) => kind === "return")
+    .map(({ node, site }) => ({ node, location: range(site) }));
 
 const callableIdsForBinding = (
   binding: JavaScriptSemanticBindingState,

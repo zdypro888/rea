@@ -37,6 +37,13 @@ export const legacyMetadataSchema = z
     base: idaAddressSchema,
   })
   .passthrough();
+/** A worker that is still busy right after opening reports this transient shape instead of its identity. */
+export const busyHealthSchema = z
+  .object({
+    status: z.literal("busy"),
+    busy_tool: z.string().optional(),
+  })
+  .passthrough();
 export const modernHealthSchema = z
   .object({
     status: z.literal("ok"),
@@ -45,16 +52,6 @@ export const modernHealthSchema = z
     imagebase: idaAddressSchema,
     auto_analysis_ready: z.boolean().nullable(),
     module: z.string(),
-  })
-  .passthrough();
-
-/** Busy replies intentionally omit database identity; never treat them as ready. */
-export const modernBusyHealthSchema = z
-  .object({
-    status: z.literal("busy"),
-    busy_tool: z.string(),
-    busy_sec: z.number().nonnegative(),
-    queued_calls: z.number().int().nonnegative(),
   })
   .passthrough();
 

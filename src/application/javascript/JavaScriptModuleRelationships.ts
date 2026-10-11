@@ -1,6 +1,9 @@
 import { posix } from "node:path";
 
-import { compareUnicodeCodePoints } from "../../domain/unicodeCodePointOrder.js";
+import {
+  compareUnicodeCodePoints,
+  compositeKey,
+} from "../../domain/unicodeCodePointOrder.js";
 import type { ApplicationNode } from "../../domain/javascript/javascriptApplicationGraphSchemas.js";
 import {
   completeApplicationCoverage,
@@ -136,15 +139,17 @@ export interface JavaScriptModuleRelationshipOmissions {
 type RelationshipOmissionCounter = { selfImports: number };
 
 /** Compose bounded CommonJS and ESM binding relationships across artifact files. */
-export const addJavaScriptModuleRelationships = (
+export function* addJavaScriptModuleRelationshipsSteps(
   context: JavaScriptArtifactGraphContext,
-): JavaScriptModuleRelationshipOmissions => {
+): Generator<void, JavaScriptModuleRelationshipOmissions> {
   const omissions = { selfImports: 0 };
   for (const analyzed of context.analysis.files) {
     const { file, semantic } = analyzed;
     const source = context.sourceModuleNodes.get(file.path);
     if (semantic === null || source === undefined) continue;
     for (const link of semantic.ir.moduleLinks) {
+      // One module can export thousands of bindings, each with return shapes.
+      yield;
       const input = { context, file, semantic, source, link };
       if (isExportLink(link)) addExportRelationship(input, omissions);
       else if (link.specifier !== null)
@@ -155,7 +160,7 @@ export const addJavaScriptModuleRelationships = (
     }
   }
   return omissions;
-};
+}
 
 const addExportRelationship = (
   input: RelationshipInput,
@@ -175,7 +180,7 @@ const addExportRelationship = (
     identity: artifactLocalIdentity(
       file.sha256,
       "module-export",
-      `${file.container_sha256}:${file.path}:${link.exportedName}`,
+      compositeKey([file.container_sha256, file.path, link.exportedName]),
     ),
     observations: [
       {
@@ -374,7 +379,9 @@ const relationshipProperties = (
   resolution_status: target?.status ?? null,
   target_file_kind: target?.file?.kind ?? null,
   target_json_status:
-    target?.file?.kind === "json" ? jsonStatus(target.file) : null,
+    target?.file?.kind === "json" || target?.file?.kind === "package-json"
+      ? jsonStatus(target.file)
+      : null,
 });
 
 const relationshipEvidence = (

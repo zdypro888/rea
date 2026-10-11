@@ -63,6 +63,7 @@ export class IdaAnalysisRecovery {
         this.connection,
         this.config.mode === "attached" ? "legacy" : "modern",
         this.binding.database,
+        options?.signal,
       );
       const result = await runner.run(operation, parameters);
       const after = await this.binding.observe();

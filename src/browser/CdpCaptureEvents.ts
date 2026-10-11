@@ -22,9 +22,11 @@ export class CdpCaptureEvents implements CdpCaptureEventsState {
   readonly network = new Map<string, NetworkState>();
   readonly networkRequestTimestamps = new Map<string, number>();
   readonly malformedRedirectRequestIds = new Set<string>();
-  readonly allowedWebSockets = new Set<string>();
+  readonly webSocketConnectionsById = new Map<
+    string,
+    WebPageInspection["network"]["websocket_connections"][number]
+  >();
   console: WebPageInspection["console"]["events"] = [];
-  websockets: WebPageInspection["network"]["websocket_events"] = [];
   responseMetadata: WebPageInspection["metadata"]["responses"] = [];
   agentHints: WebPageInspection["metadata"]["agent_hints"] = [];
   readonly completeness = new CdpCaptureCompleteness([
@@ -63,9 +65,8 @@ export class CdpCaptureEvents implements CdpCaptureEventsState {
     this.network.clear();
     this.networkRequestTimestamps.clear();
     this.malformedRedirectRequestIds.clear();
-    this.allowedWebSockets.clear();
+    this.webSocketConnectionsById.clear();
     this.console.length = 0;
-    this.websockets.length = 0;
     this.responseMetadata.length = 0;
     this.agentHints.length = 0;
     this.completeness.reset();
@@ -159,10 +160,8 @@ export class CdpCaptureEvents implements CdpCaptureEventsState {
     script: CapturedScript,
     allowedFrameIds: ReadonlySet<string>,
   ): string | null {
-    if (script.executionContextKey === null) return null;
-    const frameId = this.executionContextFrames.get(script.executionContextKey);
-    return frameId !== undefined && allowedFrameIds.has(frameId)
-      ? frameId
+    return script.frameId !== null && allowedFrameIds.has(script.frameId)
+      ? script.frameId
       : null;
   }
 

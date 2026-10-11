@@ -6,7 +6,11 @@ import { z } from "zod";
 
 import { BinaryLayoutService } from "../../../src/application/binaryDiagnostics/BinaryLayoutService.js";
 import { toolContract } from "../../../src/contracts/toolContracts.js";
-import { parseEvidence } from "../../../src/domain/evidence.js";
+import { createEvidence, parseEvidence } from "../../../src/domain/evidence.js";
+import { createAnalysisProfile } from "../../../src/domain/analysisProfile.js";
+import { jsonObjectSchema } from "../../../src/domain/jsonValue.js";
+import { functionDossierSchema } from "../../../src/domain/hopperValues.js";
+import { ghidraFunctionDossier } from "../../../src/domain/ghidraValues.fixture.js";
 import { ok } from "../../../src/domain/result.js";
 import {
   createJavaScriptApplicationGraph,
@@ -17,6 +21,7 @@ import {
   analysisViewJavaScriptEvidence,
   analysisViewJavaScriptAnalysisWithSource,
   analysisViewBindJavaScriptGraphs,
+  analysisViewLayoutEvidence,
   analysisViewLayoutFixture,
 } from "../../fixtures/analysisView.js";
 import { createTestBinarySession } from "../../fixtures/binarySession.js";
@@ -42,6 +47,115 @@ const connect = async (binaryLayout?: BinaryLayoutService) => {
   await client.connect(clientTransport);
   return { client, session };
 };
+
+it("discovers an oversized native dossier by exact metadata and reads its retained view", async () => {
+  const { client, session } = await connect();
+  const provider = { id: "ghidra", name: "Ghidra", version: "12.1.4" };
+  const profile = createAnalysisProfile(provider, { language: "fixture" });
+  const parent = createEvidence(
+    { path: "/fixtures/large.exe", format: "pe", sha256: "a".repeat(64) },
+    provider,
+    {
+      operation: "analyze_function",
+      parameters: { procedure: "0x401000" },
+      analysisProfile: profile,
+      result: {
+        ...jsonObjectSchema.parse(ghidraFunctionDossier()),
+        pseudocode: "x".repeat(6 * 1024 * 1024),
+      },
+      rawResult: null,
+    },
+  );
+  const other = createEvidence(
+    { path: "/fixtures/other.exe", format: "pe", sha256: "b".repeat(64) },
+    provider,
+    {
+      operation: "analyze_function",
+      parameters: {},
+      result: ghidraFunctionDossier(),
+    },
+  );
+  for (const record of [parent, other]) {
+    const retained = session.recordEvidence(record);
+    if (!retained.ok) throw retained.error;
+  }
+  const broad = await client.callTool({
+    name: "get_evidence_bundle",
+    arguments: {},
+  });
+  const broadError = parseMcpToolError(broad).error;
+  expect(broadError.code).toBe("resource_constraint");
+  expect(broadError.remediation?.action).toContain(
+    "get_evidence_bundle and detail: summary",
+  );
+  const response = await client.callTool({
+    name: "get_evidence_bundle",
+    arguments: {
+      detail: "summary",
+      filters: {
+        operation: "analyze_function",
+        target_sha256: "a".repeat(64),
+        analysis_profile_digest: profile.digest,
+        procedure_address: "0x401000",
+      },
+    },
+  });
+  expect(response.isError).not.toBe(true);
+  const result = toolContract("get_evidence_bundle").outputSchema.parse(
+    response.structuredContent,
+  ).result;
+  expect(result).toMatchObject({
+    kind: "evidence-bundle-summary",
+    total_retained_records: 2,
+    matching_records: 1,
+    records: [
+      {
+        evidence_id: parent.evidence_id,
+        analysis_profile_digest: profile.digest,
+        retention: "complete-record",
+        native_dossier: { available: true, procedure_address: "0x401000" },
+      },
+    ],
+  });
+  expect(JSON.stringify(response)).not.toContain("pseudocode");
+  expect(
+    JSON.parse(response.content.find((c) => c.type === "text")?.text ?? "null"),
+  ).toEqual(response.structuredContent);
+  const page = await client.callTool({
+    name: "inspect_analysis_view",
+    arguments: {
+      source: { kind: "retained-evidence", evidence_id: parent.evidence_id },
+      view: { kind: "native", facet: "pseudocode", offset: 0, limit: 32 },
+    },
+  });
+  expect(page.isError).not.toBe(true);
+  expect(
+    toolContract("inspect_analysis_view").outputSchema.parse(
+      page.structuredContent,
+    ).normalized_result,
+  ).toMatchObject({
+    item: { text: "x".repeat(32) },
+    coverage: { total: 6 * 1024 * 1024, exhausted: false },
+  });
+  const empty = await client.callTool({
+    name: "get_evidence_bundle",
+    arguments: {
+      detail: "summary",
+      filters: { evidence_id: `ev_${"e".repeat(64)}` },
+    },
+  });
+  expect(
+    toolContract("get_evidence_bundle").outputSchema.parse(
+      empty.structuredContent,
+    ).result,
+  ).toMatchObject({ matching_records: 0, records: [] });
+  await client.ping();
+  const invalid = await client.callTool({
+    name: "get_evidence_bundle",
+    arguments: { filters: { operation: "analyze_function" } },
+  });
+  expect(parseMcpToolError(invalid).error.code).toBe("invalid_request");
+});
 
 it("advertises exact schemas and projects one layout section from retained Evidence", async () => {
   const layout = analysisViewLayoutFixture();
@@ -107,6 +221,97 @@ it("advertises exact schemas and projects one layout section from retained Evide
   expect(session.evidenceById(parsed.evidence_id)).toEqual(
     parseEvidence(parsed),
   );
+});
+
+it("reports a tampered inline Evidence ID at its full MCP source path", async () => {
+  const { client } = await connect();
+  const parent = analysisViewLayoutEvidence();
+  const response = await client.callTool({
+    name: "inspect_analysis_view",
+    arguments: {
+      source: {
+        kind: "inline",
+        evidence: { ...parent, evidence_id: `ev_${"0".repeat(64)}` },
+      },
+      view: { kind: "summary" },
+    },
+  });
+
+  expect(parseMcpToolError(response).error).toMatchObject({
+    code: "invalid_request",
+    category: "invalid_input",
+    details: {
+      issues: [
+        {
+          path: ["source", "evidence", "evidence_id"],
+          reason: "invalid_value",
+          message: "Evidence semantic identifier does not match its record",
+        },
+      ],
+    },
+  });
+});
+
+it("delivers a bounded native dossier view over MCP without a Ghidra provider or lost connection", async () => {
+  const { client, session } = await connect();
+  const original = functionDossierSchema.parse(ghidraFunctionDossier());
+  const parent = createEvidence(
+    {
+      path: "/fixtures/oversized-native.exe",
+      format: "pe",
+      sha256: "b".repeat(64),
+    },
+    { id: "ghidra", name: "Ghidra", version: "12.1.4" },
+    {
+      operation: "analyze_function",
+      parameters: { address: "0x401000" },
+      result: { ...original, pseudocode: "X".repeat(11 * 1024 * 1024) },
+    },
+  );
+  expect(session.recordEvidence(parent).ok).toBe(true);
+  const advertised = (await client.listTools()).tools.find(
+    (tool) => tool.name === "inspect_analysis_view",
+  );
+  if (advertised?.outputSchema === undefined)
+    throw new Error("missing view schemas");
+  const ajv = new Ajv2020({ strict: false, validateFormats: false });
+  const inputSchema: Record<string, unknown> = advertised.inputSchema;
+  const outputSchema: Record<string, unknown> = advertised.outputSchema;
+  const arguments_ = {
+    source: { kind: "retained-evidence", evidence_id: parent.evidence_id },
+    view: { kind: "native", facet: "pseudocode", offset: 0, limit: 500 },
+  };
+  expect(ajv.validateSchema(inputSchema)).toBe(true);
+  expect(ajv.validateSchema(outputSchema)).toBe(true);
+  expect(
+    ajv.validate(inputSchema, arguments_),
+    JSON.stringify(ajv.errors),
+  ).toBe(true);
+  const response = await client.callTool({
+    name: "inspect_analysis_view",
+    arguments: arguments_,
+  });
+  expect(response.isError).not.toBe(true);
+  expect(
+    ajv.validate(outputSchema, response.structuredContent),
+    JSON.stringify(ajv.errors),
+  ).toBe(true);
+  const parsed = toolContract("inspect_analysis_view").outputSchema.parse(
+    response.structuredContent,
+  );
+  expect(parsed.normalized_result).toMatchObject({
+    kind: "native",
+    parent_evidence_id: parent.evidence_id,
+    procedure_address: "0x401000",
+    coverage: { examined: 500, next_offset: 500, total: 11 * 1024 * 1024 },
+  });
+  expect(parsed.evidence_links).toEqual([parent.evidence_id]);
+  expect(parsed.locations).toEqual([
+    { kind: "artifact-path", path: "/fixtures/oversized-native.exe" },
+    { kind: "address", address: "0x401000" },
+  ]);
+  expect(JSON.stringify(response.structuredContent).length).toBeLessThan(12000);
+  await client.ping();
 });
 
 it("retains an oversized selected observation and keeps subsequent views usable", async () => {
@@ -183,6 +388,71 @@ it("retains an oversized selected observation and keeps subsequent views usable"
     },
   });
   expect(summary.isError).not.toBe(true);
+});
+
+it("retains an oversized native assembly row and permits a subsequent smaller view", async () => {
+  const { client, session } = await connect();
+  const row = "\0".repeat(1_000_000);
+  const parent = createEvidence(
+    { path: "/fixtures/large-row.exe", format: "pe", sha256: "c".repeat(64) },
+    { id: "ghidra", name: "Ghidra", version: "12.1.4" },
+    {
+      operation: "analyze_function",
+      parameters: {},
+      result: {
+        ...functionDossierSchema.parse(ghidraFunctionDossier()),
+        assembly: [row],
+      },
+    },
+  );
+  expect(session.recordEvidence(parent).ok).toBe(true);
+  const source = { kind: "retained-evidence", evidence_id: parent.evidence_id };
+  const response = await client.callTool({
+    name: "inspect_analysis_view",
+    arguments: {
+      source,
+      view: { kind: "native", facet: "assembly", offset: 0, limit: 1 },
+    },
+  });
+  expect(response.isError).toBe(true);
+  const error = z
+    .object({
+      error: z.object({
+        details: z.object({
+          reported_limits: z.object({
+            evidence_reference: z.object({
+              kind: z.literal("retained-evidence"),
+              evidence_id: z.string(),
+            }),
+          }),
+        }),
+      }),
+    })
+    .parse(parseMcpToolError(response));
+  const retained = session.evidenceById(
+    error.error.details.reported_limits.evidence_reference.evidence_id,
+  );
+  expect(retained?.normalized_result).toMatchObject({
+    item: [row],
+    parent_evidence_id: parent.evidence_id,
+  });
+  const next = await client.callTool({
+    name: "inspect_analysis_view",
+    arguments: {
+      source,
+      view: { kind: "native", facet: "pseudocode", offset: 0, limit: 12 },
+    },
+  });
+  expect(next.isError).not.toBe(true);
+  expect(
+    toolContract("inspect_analysis_view").outputSchema.parse(
+      next.structuredContent,
+    ).normalized_result,
+  ).toMatchObject({
+    item: { text: "int fixture_" },
+    parent_evidence_id: parent.evidence_id,
+  });
+  await client.ping();
 });
 
 it("returns a JavaScript summary without graph payloads from a retained reference", async () => {
