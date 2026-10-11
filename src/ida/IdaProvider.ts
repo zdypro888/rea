@@ -126,9 +126,11 @@ export class IdaProvider implements AnalysisProviderCandidate {
         upstream_distribution_version: null,
         mode: config.value.mode,
         compatibility_profile:
-          config.value.mode === "attached"
-            ? "legacy-1.4"
-            : "database-supervisor",
+          config.value.backend === "official"
+            ? "hex-rays-official-nexus"
+            : config.value.mode === "attached"
+              ? "legacy-1.4"
+              : "database-supervisor",
         database_revision: null,
         cache_policy: "live",
         registration_digest: createHash("sha256")

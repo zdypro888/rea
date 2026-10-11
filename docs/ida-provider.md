@@ -1,10 +1,12 @@
 # IDA Pro provider
 
-REA adapts an existing [mrexodia/ida-pro-mcp](https://github.com/mrexodia/ida-pro-mcp) server into its native analysis tools. Install and configure IDA, Hex-Rays, Python, and upstream MCP using that repository's instructions. REA does not install, upgrade, activate, or license them, and does not bundle another IDA server.
+REA adapts the [official Hex-Rays IDA MCP](https://github.com/HexRaysSA/ida-mcp) or an existing [community ida-pro-mcp](https://github.com/mrexodia/ida-pro-mcp) server into its native analysis tools. Install and configure IDA, Hex-Rays, Python, and your chosen MCP using its upstream instructions. REA does not install, upgrade, activate, or license them, and does not bundle another IDA server. Existing registrations retain their community behavior unless `backend: "official"` is explicitly selected.
 
 Choose one lifecycle mode in an upstream MCP JSON registration. Set `REA_IDA_MCP_CONFIG` to that file, then select `ida` once through `REA_ANALYSIS_PROVIDER`, the CLI's `--provider ida`, or MCP's `open_binary.provider_id`. No provider startup occurs during discovery.
 
 ## Analyze an already-open GUI target
+
+This mode is unchanged and uses the community legacy profile. Official GUI attachment is not admitted by REA's current read-only lifecycle contract.
 
 The attached profile supports upstream **1.4.0 legacy tools**, including `get_metadata`, `list_functions`, and `decompile_function`. Copy the upstream registration's `command`, `args`, and optional `env` into a JSON file. An existing `mcpServers` object with an `ida-pro-mcp` entry is also accepted. For example:
 
@@ -33,6 +35,25 @@ Open the **original input binary** in REA, not an `.idb` or `.i64` database. Its
 REA's close operation releases its MCP connection or proxy. It never saves or closes the existing GUI database. External edits remain visible because results are live and are not replayed from snapshots. These checks do not lock the GUI or prove that the database is unpatched.
 
 ## Give REA a target for headless analysis
+
+### Official Hex-Rays backend (IDA 9.4+)
+
+```json
+{
+  "backend": "official",
+  "command": "/absolute/path/to/ida-mcp",
+  "args": ["stdio", "--agent=rea"],
+  "mode": "headless"
+}
+```
+
+This requires the official `ida-mcp` distribution with idalib and Python 3.11+, not the community `idalib-mcp` executable. The official protocol uses `open_database`, `list_databases`, `execute_python`, and `close_database`. REA creates a separate private input copy, requires an `idalib` lease, verifies input digest and database identity around queries, and releases only its own lease. It never opens the original input in Nexus, requests `save_database`, or closes a GUI database. Nexus may automatically save its private database on final lease release; this is not an unsaved-close guarantee. The private directory is removed only after release and inventory verification; uncertain cleanup retains it.
+
+REA sends fixed IDAPython read queries, not user-authored Python. Symbols and addresses are JSON data. Actual Python requests and responses remain in `raw_result` under `official_source`; the modern-shaped query names are adapter projections, not official MCP tool names. Function/string enumeration, assembly and pseudocode use advancing pages. Pseudocode preserves ctree-derived address markers. The existing recovery logic still rejects pending-analysis results, advances only the bound private worker, and reruns reads after readiness is confirmed. Upstream execution deadlines and cancellation behavior do not imply force-interruption of every native IDA call.
+
+The public REA query surface is unchanged. Direct callers remain unavailable in headless mode, and unsupported dossier facets remain explicitly unknown. GUI integration, debugger operations, arbitrary Python and mutation tools are not newly exposed. Choose the community registration again to roll back without uninstalling either backend.
+
+### Community supervisor backend
 
 The headless profile supports upstream's **database supervisor** API: `idb_open`, `idb_list`, `idb_close`, explicit `database` arguments, and modern analysis tools. Legacy 1.4.0 `idalib-mcp`, which accepts one initial filename and serves SSE, does not implement this profile. Follow the [upstream headless instructions](https://github.com/mrexodia/ida-pro-mcp#headless-idalib-session-model) for an installation with the supervisor API.
 

@@ -11,9 +11,11 @@ import { z } from "zod";
 import type { IdaConfiguration } from "./IdaConfiguration.js";
 import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
 import { AnalysisProtocolError } from "../domain/analysisErrorCore.js";
+import { OfficialIdaConnection } from "./OfficialIdaConnection.js";
 
 /** Injectable MCP boundary used by the provider and transport conformance tests. */
 export interface IdaMcpConnection {
+  readonly official?: boolean;
   connect(): Promise<readonly string[]>;
   /** Declared top-level parameters; undefined only for injected legacy boundaries. */
   toolParameters?(name: string): readonly string[] | undefined;
@@ -142,7 +144,7 @@ export const createIdaMcpConnection = (
   // Drain proxy diagnostics without persisting ambient environment or transport credentials.
   if (transport instanceof StdioClientTransport)
     transport.stderr?.on("data", () => undefined);
-  return {
+  const connection: IdaMcpConnection = {
     async connect() {
       await client
         .connect(transport, { timeout: config.timeoutMs })
@@ -169,4 +171,7 @@ export const createIdaMcpConnection = (
     serverInfo: () => jsonValueSchema.parse(client.getServerVersion() ?? null),
     close: () => client.close().catch(transportFailure),
   };
+  return config.backend === "official"
+    ? new OfficialIdaConnection(connection, config.timeoutMs)
+    : connection;
 };

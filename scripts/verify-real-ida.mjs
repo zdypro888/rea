@@ -201,10 +201,14 @@ const cleanup = async () => {
         "existing GUI target remains open with the original input identity",
       );
     } else {
-      const inventory = await upstream.call("idb_list", {});
+      const inventory = await upstream.call(
+        config.backend === "official" ? "list_databases" : "idb_list",
+        {},
+      );
       assert.ok(
-        inventory.sessions.every(
-          (session) => !databases.has(session.session_id),
+        (inventory.instances ?? inventory.sessions).every(
+          (session) =>
+            !databases.has(session.instance_id ?? session.session_id),
         ),
       );
       for (const workspace of workspaces)

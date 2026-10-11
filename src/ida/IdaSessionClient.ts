@@ -46,6 +46,8 @@ import {
   sameIdaHostPath,
 } from "./IdaWorkspace.js";
 import { parseIdaInput } from "./IdaInput.js";
+import { OFFICIAL_IDA_TOOLS } from "./OfficialIdaConnection.js";
+import { OfficialIdaLifecycle } from "./OfficialIdaLifecycle.js";
 
 const legacyTools = [
   "get_metadata",
@@ -98,6 +100,7 @@ class IdaCleanupError extends ProviderAdapterError {
 
 /** Serial read-only session whose lifecycle authority excludes an attached GUI. */
 export class IdaSessionClient implements AnalysisClient {
+  #officialLifecycle: OfficialIdaLifecycle | undefined;
   #tail: Promise<void> = Promise.resolve();
   #startup: Promise<void> | undefined;
   #closed = false;
@@ -288,8 +291,15 @@ export class IdaSessionClient implements AnalysisClient {
 
   async #initialize(): Promise<void> {
     const tools = new Set(await this.connection.connect());
-    const expected =
-      this.config.mode === "attached" ? legacyTools : modernTools;
+    if (this.connection.official && this.config.mode !== "headless")
+      throw new AnalysisProtocolError(
+        "Official IDA integration currently requires headless mode and a private input copy; attached GUI authority is not admitted.",
+      );
+    const expected = this.connection.official
+      ? OFFICIAL_IDA_TOOLS
+      : this.config.mode === "attached"
+        ? legacyTools
+        : modernTools;
     const missing = expected.filter((name) => !tools.has(name));
     if (missing.length > 0)
       throw new AnalysisProtocolError(
@@ -302,6 +312,15 @@ export class IdaSessionClient implements AnalysisClient {
       );
       await this.#workspace.copyInput();
       this.#openAttempted = true;
+      if (this.connection.official) {
+        this.#officialLifecycle = new OfficialIdaLifecycle(
+          this.connection,
+          this.#workspace.inputPath,
+          this.#lifecycle,
+        );
+        this.#database = await this.#officialLifecycle.open();
+        return;
+      }
       const raw = await this.connection.call("idb_open", {
         input_path: this.#workspace.inputPath,
         mode: "force_headless",
@@ -426,6 +445,11 @@ export class IdaSessionClient implements AnalysisClient {
     await this.#tail;
     if (this.#closed) return ok(null);
     try {
+      if (this.#officialLifecycle !== undefined) {
+        await this.#officialLifecycle.release();
+        this.#database = undefined;
+        this.#openAttempted = false;
+      }
       if (this.#workspace !== undefined && this.#openAttempted) {
         if (this.#database === undefined) {
           const inventory = databaseListSchema.parse(

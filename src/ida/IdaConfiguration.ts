@@ -5,6 +5,7 @@ import { ConfigurationError } from "../domain/configurationErrors.js";
 import { err, ok, type Result } from "../domain/result.js";
 
 const common = {
+  backend: z.enum(["community", "official"]).optional(),
   mode: z.enum(["attached", "headless"]).default("attached"),
   timeoutMs: z.number().int().positive().max(2_147_483_647).default(300_000),
   workspaceRoot: z
@@ -61,6 +62,16 @@ export const readIdaConfiguration = (
     const parsed = registrationSchema.safeParse(
       envelope.success ? envelope.data.mcpServers["ida-pro-mcp"] : input,
     );
+    if (
+      parsed.success &&
+      parsed.data.backend === "official" &&
+      parsed.data.mode !== "headless"
+    )
+      return err(
+        idaConfigurationError(
+          "Official IDA MCP currently requires mode=headless; REA does not admit official GUI lifecycle authority.",
+        ),
+      );
     return parsed.success
       ? ok(parsed.data)
       : err(

@@ -37,6 +37,8 @@ describe("IDA registration and MCP result boundaries", () => {
     roots.push(root);
     const path = join(root, "mcp.json");
     for (const input of [
+      { command: "ida-mcp", backend: "official", mode: "attached" },
+      { command: "ida-mcp", backend: "not-a-backend", mode: "headless" },
       { url: "https://example.com/mcp" },
       { url: "http://token@127.0.0.1/mcp" },
       { command: "python", mode: "force_gui" },
@@ -55,6 +57,19 @@ describe("IDA registration and MCP result boundaries", () => {
       }),
     );
     expect(readIdaConfiguration(path).ok).toBe(true);
+    await writeFile(
+      path,
+      JSON.stringify({
+        command: "ida-mcp",
+        args: ["stdio"],
+        backend: "official",
+        mode: "headless",
+      }),
+    );
+    expect(readIdaConfiguration(path)).toMatchObject({
+      ok: true,
+      value: { backend: "official", mode: "headless" },
+    });
     await writeFile(path, "malformed");
     expect(readIdaConfiguration(path).ok).toBe(false);
     expect(readIdaConfiguration(join(root, "absent")).ok).toBe(false);
