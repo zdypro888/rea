@@ -54,7 +54,7 @@ export const readSettledHealth = async (
   const started = clock.now();
   const remaining = (): number => timeoutMs - (clock.now() - started);
   for (;;) {
-    const raw = await connection.call("server_health", { database });
+    const raw = await connection.call("server_health", { database }, signal);
     const busy = busyHealthSchema.safeParse(raw);
     if (!busy.success) {
       if (isBusyStatus(raw)) throw busy.error;

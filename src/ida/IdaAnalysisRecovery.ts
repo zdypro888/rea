@@ -122,7 +122,11 @@ export class IdaAnalysisRecovery {
         database: this.binding.database,
         budget_ms: Math.min(100, Math.floor(remaining)),
       };
-      const raw = await this.connection.call("analysis_advance", args);
+      const raw = await this.connection.call(
+        "analysis_advance",
+        args,
+        context.options?.signal,
+      );
       const advanced = z
         .object({
           steps: z.number().int().nonnegative(),

@@ -55,6 +55,7 @@ export class IdaProvider implements AnalysisProviderCandidate {
     return idaCapabilities(
       config.ok ? config.value.mode : "attached",
       config.ok && "command" in config.value,
+      config.ok && config.value.backend === "official",
     );
   }
   inspectAvailability(): ProviderAvailability {

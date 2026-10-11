@@ -27,9 +27,8 @@ import {
 import { readSettledHealth } from "./IdaBusyHealth.js";
 import {
   IDA_LIMITATIONS,
-  IDA_OPERATIONS,
   IDA_PROVIDER_IDENTITY,
-  type IdaOperation,
+  admitsIdaOperation,
 } from "./IdaProviderCapabilities.js";
 import {
   closeDatabaseSchema,
@@ -72,9 +71,6 @@ const modernTools = [
   "callees",
   "xrefs_to",
 ];
-const operationSet: ReadonlySet<string> = new Set(IDA_OPERATIONS);
-const isIdaOperation = (operation: string): operation is IdaOperation =>
-  operationSet.has(operation);
 const wasCancelled = (options: ExecutionOptions | undefined): boolean =>
   options?.signal?.aborted === true;
 
@@ -148,7 +144,10 @@ export class IdaSessionClient implements AnalysisClient {
       );
     if (wasCancelled(options))
       return err(new AnalysisCancelledError(operation));
-    if (operation !== "health" && !isIdaOperation(operation))
+    if (
+      operation !== "health" &&
+      !admitsIdaOperation(operation, this.connection.official === true)
+    )
       return err(
         new AnalysisCapabilityUnavailableError(
           "ida",
@@ -198,7 +197,7 @@ export class IdaSessionClient implements AnalysisClient {
           return err(new AnalysisCancelledError(operation));
         return this.#health(metadata);
       }
-      if (!isIdaOperation(operation))
+      if (!admitsIdaOperation(operation, this.connection.official === true))
         throw new AnalysisProtocolError(
           "IDA operation changed after validation.",
         );

@@ -1,7 +1,9 @@
 import { AnalysisProtocolError } from "../domain/analysisErrorCore.js";
 import type { JsonValue } from "../domain/jsonValue.js";
+import { officialIdaInstruction } from "./OfficialIdaInstruction.js";
 
 const queryBodies: Readonly<Record<string, string>> = {
+  inspect_instruction: officialIdaInstruction,
   server_health: "return health()",
   analysis_advance: `steps = 0
 deadline = time.monotonic() + args['budget_ms'] / 1000
@@ -92,6 +94,7 @@ export const officialIdaQuery = (
   return `import json, time, os, itertools
 import idaapi, ida_idaapi, ida_ida, ida_auto, ida_kernwin, ida_nalt, ida_loader
 import ida_funcs, ida_name, ida_hexrays, ida_lines, ida_bytes, ida_xref, idautils
+import ida_ua, ida_idp
 def _rea_query():
     args = json.loads(${JSON.stringify(JSON.stringify(args))})
     def describe(f):

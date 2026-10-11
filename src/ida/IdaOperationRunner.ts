@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { nativeInstructionSchema } from "../domain/native/nativeInstruction.js";
 import { analysisSearchInput } from "../contracts/analysisSearchContract.js";
 import {
   AnalysisInputError,
@@ -9,7 +10,7 @@ import {
   functionDossierSchema,
   functionInstructionWindowSchema,
 } from "../domain/hopperValues.js";
-import type { JsonValue } from "../domain/jsonValue.js";
+import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
 import type { IdaMcpConnection } from "./IdaMcpConnection.js";
 import type { IdaOperation } from "./IdaProviderCapabilities.js";
 import { IDA_LIMITATIONS } from "./IdaProviderCapabilities.js";
@@ -74,7 +75,7 @@ export class IdaOperationRunner {
     if (this.signal?.aborted) throw new AnalysisCancelledError(tool);
     const scoped =
       this.database === undefined ? args : { ...args, database: this.database };
-    const result = await this.connection.call(tool, scoped);
+    const result = await this.connection.call(tool, scoped, this.signal);
     this.raw.push({ tool, arguments: scoped, result });
     if (this.signal?.aborted) throw new AnalysisCancelledError(tool);
     return result;
@@ -372,6 +373,21 @@ export class IdaOperationRunner {
       const inspectedAddress = idaAddressSchema.parse(parameters.address);
       this.locations.push({ kind: "address", address: inspectedAddress });
       return (await this.xrefs(inspectedAddress)).map(({ address }) => address);
+    }
+    if (operation === "inspect_native_instruction") {
+      const address = idaAddressSchema.parse(parameters.address);
+      this.locations.push({ kind: "address", address });
+      const raw = await this.call("inspect_instruction", { address });
+      const { official_source: _source, ...instruction } = z
+        .record(z.string(), z.unknown())
+        .parse(raw);
+      const value = nativeInstructionSchema.parse(instruction);
+      if (BigInt(value.address) !== BigInt(address))
+        throw new AnalysisProtocolError(
+          "IDA returned a different instruction address.",
+        );
+      this.limitations.push(...value.limitations);
+      return jsonValueSchema.parse(value);
     }
     const fn = await this.resolve(
       z.string().min(1).parse(parameters.procedure),

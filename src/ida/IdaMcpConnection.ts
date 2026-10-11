@@ -22,6 +22,7 @@ export interface IdaMcpConnection {
   call(
     name: string,
     args: Readonly<Record<string, JsonValue>>,
+    signal?: AbortSignal,
   ): Promise<JsonValue>;
   serverInfo(): JsonValue;
   close(): Promise<void>;
@@ -48,15 +49,18 @@ const toolResultSchema = z.object({
 });
 
 /** Decode Python FastMCP's scalar wrapper without dropping structured dictionaries. */
+export class IdaToolFailure extends AnalysisProtocolError {
+  constructor(readonly upstreamMessage: string) {
+    super(`IDA MCP tool failed: ${upstreamMessage}`);
+  }
+}
+
 export const decodeIdaToolResult = (input: unknown): JsonValue => {
   const result = toolResultSchema.parse(input);
   const blocks = result.content.flatMap((block) =>
     block.type === "text" && block.text !== undefined ? [block.text] : [],
   );
-  if (result.isError === true)
-    throw new AnalysisProtocolError(
-      `IDA MCP tool failed: ${blocks.join("\n")}`,
-    );
+  if (result.isError === true) throw new IdaToolFailure(blocks.join("\n"));
   if (result._meta?.ida_mcp?.output_truncated === true)
     throw new AnalysisProtocolError(
       `IDA MCP truncated its output; the preview cannot establish a complete observation. ${result._meta.ida_mcp.download_hint ?? "Use the upstream output download workflow to retrieve the full result."}`,

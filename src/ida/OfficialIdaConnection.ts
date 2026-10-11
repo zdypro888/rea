@@ -1,7 +1,12 @@
 import { z } from "zod";
-import { AnalysisProtocolError } from "../domain/analysisErrorCore.js";
+import {
+  AnalysisProtocolError,
+  AnalysisTimeoutError,
+  AnalysisCancelledError,
+} from "../domain/analysisErrorCore.js";
+import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
-import type { IdaMcpConnection } from "./IdaMcpConnection.js";
+import { IdaToolFailure, type IdaMcpConnection } from "./IdaMcpConnection.js";
 import { officialIdaQuery } from "./OfficialIdaQuery.js";
 
 export const OFFICIAL_IDA_TOOLS = [
@@ -42,6 +47,7 @@ export class OfficialIdaConnection implements IdaMcpConnection {
   async call(
     name: string,
     args: Readonly<Record<string, JsonValue>>,
+    signal?: AbortSignal,
   ): Promise<JsonValue> {
     if ((OFFICIAL_IDA_TOOLS as readonly string[]).includes(name))
       return this.transport.call(name, args);
@@ -52,7 +58,55 @@ export class OfficialIdaConnection implements IdaMcpConnection {
       instance_id: database,
       timeout: this.timeoutMs / 1000,
     };
-    const raw = await this.transport.call("execute_python", request);
+    // Nexus can report incomplete autoanalysis before query execution.
+    // Retry that explicit pre-execution barrier failure once only;
+    // never retry user code failures or accept an unanalysed observation.
+    const failures: string[] = [];
+    const deadline = performance.now() + this.timeoutMs;
+    let raw: JsonValue;
+    for (;;) {
+      if (signal?.aborted) throw new AnalysisCancelledError(name);
+      try {
+        raw = await this.transport.call("execute_python", request);
+        break;
+      } catch (cause) {
+        if (signal?.aborted) throw new AnalysisCancelledError(name, { cause });
+        // Shape/truncation errors remain protocol failures, not engine failures.
+        if (!(cause instanceof IdaToolFailure)) throw cause;
+        const message = cause.message;
+        if (
+          failures.length === 0 &&
+          cause.upstreamMessage ===
+            "Autoanalysis was cancelled before completion" &&
+          performance.now() < deadline
+        ) {
+          failures.push(message);
+          request.timeout = Math.max(
+            0.001,
+            (deadline - performance.now()) / 1000,
+          );
+          continue;
+        }
+        const timeout = cause.upstreamMessage.match(
+          /^(?:execute|analysis) timed out after (\d+(?:\.\d+)?)s(?:\n|$)/u,
+        );
+        if (timeout)
+          throw new AnalysisTimeoutError(name, Number(timeout[1]) * 1000, {
+            cause,
+          });
+        if (
+          /^(?:execute|analysis) was cancelled(?:\n|$)/u.test(
+            cause.upstreamMessage,
+          )
+        )
+          throw new AnalysisCancelledError(name, { cause });
+        throw new ProviderAdapterError("ida", name, {
+          cause,
+          userMessage: `Official IDA ${name} failed: ${message}`,
+          diagnostics: { reason: message, prior_barrier_failures: failures },
+        });
+      }
+    }
     const execution = z
       .object({
         result: jsonValueSchema,
@@ -60,7 +114,12 @@ export class OfficialIdaConnection implements IdaMcpConnection {
         stderr: z.string(),
       })
       .parse(raw);
-    const source = { tool: "execute_python", arguments: request, result: raw };
+    const source = {
+      tool: "execute_python",
+      arguments: request,
+      result: raw,
+      ...(failures.length ? { prior_barrier_failures: failures } : {}),
+    };
     // Each modern-shaped observation keeps the actual official request/result.
     const annotate = (v: JsonValue): JsonValue => {
       if (v === null || typeof v !== "object" || Array.isArray(v))

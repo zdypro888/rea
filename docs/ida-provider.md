@@ -1,5 +1,11 @@
 # IDA Pro provider
 
+### Official backend instruction inspection and failures
+
+`inspect_native_instruction` is supported by the official headless backend only. It reads the exact IDA instruction boundary, bytes, operand display and database references; interior addresses, data and unmapped addresses remain explicit statuses. Operand memory addressing and per-instruction execution mode remain unavailable, and database references do not establish runtime destinations. Community profiles do not advertise this capability.
+
+The official adapter retries the exact Nexus pre-execution `Autoanalysis was cancelled before completion` barrier once on the same private worker. It still requires completed analysis and verifies target identity before accepting results; recovery is retained in raw Evidence. Persistent barrier and engine failures retain their actual reason as `execution_failure`, explicit upstream execution/analysis timeouts become `provider_timeout`, and explicit operation cancellation becomes `cancelled`. Malformed/truncated replies remain protocol failures. Arbitrary script failures and caller cancellation are not retried. No GUI database is saved or closed, and no IDA or Qt library is replaced.
+
 REA adapts the [official Hex-Rays IDA MCP](https://github.com/HexRaysSA/ida-mcp) or an existing [community ida-pro-mcp](https://github.com/mrexodia/ida-pro-mcp) server into its native analysis tools. Install and configure IDA, Hex-Rays, Python, and your chosen MCP using its upstream instructions. REA does not install, upgrade, activate, or license them, and does not bundle another IDA server. Existing registrations retain their community behavior unless `backend: "official"` is explicitly selected.
 
 Choose one lifecycle mode in an upstream MCP JSON registration. Set `REA_IDA_MCP_CONFIG` to that file, then select `ida` once through `REA_ANALYSIS_PROVIDER`, the CLI's `--provider ida`, or MCP's `open_binary.provider_id`. No provider startup occurs during discovery.

@@ -10,7 +10,7 @@ export const IDA_PROVIDER_IDENTITY = Object.freeze({
   version: "1",
 });
 
-/** Read-only analyst outcomes supported by both upstream compatibility profiles. */
+/** Read-only analyst outcomes; admission and discovery qualify backend support. */
 export const IDA_OPERATIONS = Object.freeze([
   "list_procedures",
   "search_procedures",
@@ -24,8 +24,17 @@ export const IDA_OPERATIONS = Object.freeze([
   "read_function_instructions",
   "xrefs",
   "analyze_function",
+  "inspect_native_instruction",
 ] as const satisfies readonly Exclude<AnalysisOperation, "health">[]);
 export type IdaOperation = (typeof IDA_OPERATIONS)[number];
+
+/** Capability admission must agree with the selected backend, not only the catalog. */
+export const admitsIdaOperation = (
+  operation: string,
+  official: boolean,
+): operation is IdaOperation =>
+  (IDA_OPERATIONS as readonly string[]).includes(operation) &&
+  (operation !== "inspect_native_instruction" || official);
 
 /** Shared limitations of observations from an externally mutable analysis database. */
 export const IDA_LIMITATIONS = Object.freeze([
@@ -53,17 +62,24 @@ const ATTACHED_GUI_NAVIGATION_OPERATIONS: ReadonlySet<IdaOperation> = new Set([
 export const idaCapabilities = (
   mode: "attached" | "headless",
   stdio: boolean,
+  official = false,
 ): readonly CapabilityDescriptor[] =>
   IDA_OPERATIONS.map((operation) => ({
     provider: IDA_PROVIDER_IDENTITY,
     operation,
-    ...(mode === "headless" && operation === "procedure_callers"
+    ...(operation === "inspect_native_instruction" && !official
       ? ({
           available: false,
           reason:
-            "The modern upstream profile reports code references without proving direct call edges.",
+            "Single-instruction inspection requires the official IDA backend.",
         } as const)
-      : ({ available: true, reason: null } as const)),
+      : mode === "headless" && operation === "procedure_callers"
+        ? ({
+            available: false,
+            reason:
+              "The modern upstream profile reports code references without proving direct call edges.",
+          } as const)
+        : ({ available: true, reason: null } as const)),
     cachePolicy: "live",
     effects: {
       mutatesArtifact: false,

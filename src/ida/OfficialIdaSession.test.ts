@@ -19,6 +19,7 @@ async function fixture() {
     closeFails = false,
     backend = "idalib";
   const calls: string[] = [];
+  let instructionAddress: string | undefined;
   const connection: IdaMcpConnection = {
     official: true,
     connect: async () => OFFICIAL_IDA_TOOLS,
@@ -56,6 +57,32 @@ async function fixture() {
           module: "fixture",
           auto_analysis_ready: true,
         };
+      if (name === "inspect_instruction")
+        return {
+          address: instructionAddress ?? String(args.address),
+          status: "outside-memory",
+          procedure: null,
+          architecture: "metapc",
+          mode: "unavailable",
+          bytes: null,
+          length: null,
+          mnemonic: null,
+          raw_disassembly: null,
+          operands: [],
+          flow: {
+            kind: "unavailable",
+            conditional: false,
+            computed: false,
+            direct_destinations: [],
+          },
+          references: [],
+          limitations: ["Unmapped address"],
+          official_source: {
+            tool: "execute_python",
+            arguments: { instance_id: "lease" },
+            result: {},
+          },
+        };
       if (name === "close_database") {
         if (closeFails) throw new Error("release failed");
         expect(args).toEqual({ instance_id: "lease" });
@@ -90,6 +117,9 @@ async function fixture() {
     setBackend: (v: string) => {
       backend = v;
     },
+    setInstructionAddress: (v: string) => {
+      instructionAddress = v;
+    },
   };
 }
 it("opens only a verified private copy and releases a real official lease without save calls", async () => {
@@ -106,6 +136,36 @@ it("opens only a verified private copy and releases a real official lease withou
   expect(
     (await readdir(f.root)).filter((n) => n.startsWith("rea-ida-")),
   ).toEqual([]);
+});
+it("inspects an unmapped address without inventing a containing function and retains raw provenance", async () => {
+  const f = await fixture();
+  try {
+    const result = await f.client.execute("inspect_native_instruction", {
+      address: "0x1",
+    });
+    if (!result.ok) throw result.error;
+    expect(result.value).toMatchObject({
+      result: { address: "0x1", status: "outside-memory", bytes: null },
+    });
+    expect(f.calls).toContain("inspect_instruction");
+    expect(f.calls).not.toContain("lookup_funcs");
+  } finally {
+    expect(await f.client.close()).toMatchObject({ ok: true });
+  }
+});
+it("rejects instruction output bound to a different address", async () => {
+  const f = await fixture();
+  f.setInstructionAddress("0x2");
+  try {
+    const result = await f.client.execute("inspect_native_instruction", {
+      address: "0x1",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.error.message).toContain("different instruction address");
+  } finally {
+    expect(await f.client.close()).toMatchObject({ ok: true });
+  }
 });
 it("retains ownership and the private workspace after lease-release failure, then retries safely", async () => {
   const f = await fixture();

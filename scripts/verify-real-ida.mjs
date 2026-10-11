@@ -174,6 +174,27 @@ const mcp = async (cliDossier) => {
     });
     assert.equal(invalid.isError, true);
     assert.equal(requireMcpToolError(invalid).code, "invalid_request");
+    if (config.backend === "official") {
+      const address = dossier.procedure.address;
+      const first = observe(
+        await call("inspect_native_instruction", { address }),
+      );
+      assert.equal(first.status, "decoded");
+      assert.equal(BigInt(first.address), BigInt(address));
+      assert.equal(first.bytes.length, first.length * 2);
+      if (first.length > 1) {
+        const interior = observe(
+          await call("inspect_native_instruction", {
+            address: `0x${(BigInt(address) + 1n).toString(16)}`,
+          }),
+        );
+        assert.equal(interior.status, "not-instruction-boundary");
+        assert.equal(interior.bytes, null);
+      }
+      report.checks.push(
+        "official single instruction and interior-boundary rejection",
+      );
+    }
     await call("close_binary", {});
     opened = false;
     report.checks.push(
