@@ -52,6 +52,7 @@ const modernNames = [
 
 /** Stateful producer fixture at the real connection seam; no module mocking. */
 export class RecordingIdaMcp implements IdaMcpConnection {
+  toolParameters?: (name: string) => readonly string[] | undefined;
   readonly calls: {
     name: string;
     args: Readonly<Record<string, JsonValue>>;

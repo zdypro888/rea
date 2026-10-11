@@ -124,6 +124,13 @@ export const modernDecompileSchema = z.object({
   line_count: z.number().int().nonnegative().optional(),
   total_lines: z.number().int().nonnegative().optional(),
 });
+/** Supervisor releases before decompile pagination return one complete result. */
+export const unpagedDecompileSchema = z.object({
+  addr: idaAddressSchema,
+  code: z.string().nullable(),
+  error: z.string().optional(),
+  cursor: z.never().optional(),
+});
 
 export const legacyStringSchema = z.object({
   address: idaAddressSchema,

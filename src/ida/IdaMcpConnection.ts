@@ -15,6 +15,8 @@ import { AnalysisProtocolError } from "../domain/analysisErrorCore.js";
 /** Injectable MCP boundary used by the provider and transport conformance tests. */
 export interface IdaMcpConnection {
   connect(): Promise<readonly string[]>;
+  /** Declared top-level parameters; undefined only for injected legacy boundaries. */
+  toolParameters?(name: string): readonly string[] | undefined;
   call(
     name: string,
     args: Readonly<Record<string, JsonValue>>,
@@ -109,6 +111,7 @@ export const createIdaMcpConnection = (
   environment: Readonly<NodeJS.ProcessEnv>,
 ): IdaMcpConnection => {
   const client = new Client({ name: "rea-ida-provider", version: "1" });
+  const toolParameters = new Map<string, readonly string[]>();
   const transportFailure = (cause: unknown): never => {
     throw redactIdaTransportFailure(cause, config);
   };
@@ -144,13 +147,18 @@ export const createIdaMcpConnection = (
       await client
         .connect(transport, { timeout: config.timeoutMs })
         .catch(transportFailure);
+      // The pinned SDK aggregates tools/list pages and rejects nonterminating cursors.
       const catalog = await client
-        .listTools(undefined, {
-          timeout: config.timeoutMs,
-        })
+        .listTools(undefined, { timeout: config.timeoutMs })
         .catch(transportFailure);
+      for (const tool of catalog.tools)
+        toolParameters.set(
+          tool.name,
+          Object.keys(tool.inputSchema.properties ?? {}),
+        );
       return catalog.tools.map(({ name }) => name);
     },
+    toolParameters: (name) => toolParameters.get(name),
     async call(name, args) {
       return decodeIdaToolResult(
         await client

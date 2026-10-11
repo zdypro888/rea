@@ -1,4 +1,5 @@
-import { chmod, readdir, rm } from "node:fs/promises";
+import { chmod, readdir, rm, realpath, symlink } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createIdaTarget,
@@ -33,6 +34,25 @@ const clientFor = (root: string, target: BinaryTarget) => {
 };
 
 describe("IDA workspace ownership before input preparation", () => {
+  it.skipIf(process.platform === "win32")(
+    "binds canonical input paths when the selected workspace parent is a symlink",
+    async () => {
+      const { root, target } = await createIdaTarget();
+      roots.push(root);
+      const alias = join(root, "parent-alias");
+      await symlink(root, alias, "dir");
+      const { client, producer } = clientFor(alias, target);
+      try {
+        const result = await client.execute("health", {});
+        if (!result.ok) throw result.error;
+        expect(producer.inputPath).toBe(await realpath(producer.inputPath));
+        expect(producer.inputPath).not.toContain("parent-alias");
+      } finally {
+        await client.close();
+      }
+      expect(await readdir(root)).toEqual(["parent-alias", "target.elf"]);
+    },
+  );
   it("retains cleanup ownership when copying the admitted input fails", async () => {
     const { root, target } = await createIdaTarget();
     roots.push(root);

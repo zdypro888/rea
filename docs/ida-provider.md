@@ -98,6 +98,24 @@ For guided registration, set `REA_IDA_MCP_CONFIG` before `rea setup --client <cl
 
 Both profiles support procedure/string inventory and literal or regex search, procedure resolution, pseudocode, assembly, raw function instructions, resolved callees, incoming address references, and a function dossier. Inventories and modern pseudocode/assembly follow upstream pagination. Upstream limits on modern xrefs and callees are retained as explicit truncation limitations. A transport-level truncated preview is rejected rather than reported as complete evidence; the error preserves upstream retrieval guidance.
 
+The headless adapter negotiates decompilation parameters from the upstream tool
+schema, not its distribution version. Supervisors declaring both `offset` and
+`max_lines` use cursor pagination. Earlier supervisors declaring neither receive
+one address-only request; its complete response must identify the resolved
+function and must not contain a pagination cursor. Partial paging declarations
+and transport-truncated previews are rejected. This compatibility does not expose
+additional upstream mutation, Python execution, or database lifecycle authority.
+
+Pending analysis is not malformed decompiler output. Headless backends may expose
+`analysis_advance(budget_ms)` returning `steps` and `health`. REA invokes it only
+for its bound private database, rechecks target identity, and reruns queries whose
+post-operation health was pending. Recovery is limited by `timeoutMs`; cancellation
+drains the active request before further work stops. Native analysis steps cannot
+be forcibly interrupted, so the per-call budget is cooperative. An unavailable
+advance capability, unknown readiness, nonprogressing queues, or changed identity
+rejects the result rather than bypassing readiness. Health probes report pending
+state without advancing analysis. No attached GUI analysis is advanced.
+
 The legacy profile additionally supports direct callers. Its producer may report call-site or interior addresses; REA resolves the reported function symbol to its canonical entry. The modern profile does not prove direct callers from its code/data xref labels, so that capability is unavailable and the dossier marks it unknown.
 
 Complete body ranges, typed reference edges, CFG, referenced data, source locals, comment kinds, and database revision are unavailable. Empty unsupported dossier facets mean **unknown**, not observed absence. `binary_overview`, whole-symbol inventory, mutation, debugging, arbitrary Python forwarding, and GUI navigation are outside this adapter's coverage. Check session availability before composing a workflow that needs those facets.

@@ -20,7 +20,10 @@ import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
 import { err, ok, type Result } from "../domain/result.js";
 import type { IdaConfiguration } from "./IdaConfiguration.js";
 import type { IdaMcpConnection } from "./IdaMcpConnection.js";
-import { IdaOperationRunner } from "./IdaOperationRunner.js";
+import {
+  IdaAnalysisRecovery,
+  idaAnalysisReady,
+} from "./IdaAnalysisRecovery.js";
 import {
   IDA_LIMITATIONS,
   IDA_OPERATIONS,
@@ -183,23 +186,23 @@ export class IdaSessionClient implements AnalysisClient {
       );
     try {
       await this.#start();
-      const before = await this.#observe();
       if (wasCancelled(options))
         return err(new AnalysisCancelledError(operation));
-      if (operation === "health") return this.#health(before);
+      if (operation === "health") {
+        const metadata = await this.#observe();
+        if (wasCancelled(options))
+          return err(new AnalysisCancelledError(operation));
+        return this.#health(metadata);
+      }
       if (!isIdaOperation(operation))
         throw new AnalysisProtocolError(
           "IDA operation changed after validation.",
         );
-      const runner = new IdaOperationRunner(
-        this.connection,
-        this.config.mode === "attached" ? "legacy" : "modern",
-        this.#database,
-      );
-      const result = await runner.run(operation, parameters);
-      const after = await this.#observe();
-      if (wasCancelled(options))
-        return err(new AnalysisCancelledError(operation));
+      const { result, runner, before, after, recovery } =
+        await new IdaAnalysisRecovery(this.connection, this.config, {
+          database: this.#database,
+          observe: () => this.#observe(),
+        }).run(operation, parameters, options);
       return ok(
         createAnalysisExecution(result, IDA_PROVIDER_IDENTITY, {
           rawResult: {
@@ -207,6 +210,7 @@ export class IdaSessionClient implements AnalysisClient {
             metadata_before: before,
             metadata_after: after,
             observations: jsonValueSchema.parse(runner.raw),
+            analysis_recovery: recovery,
           },
           limitations: [...IDA_LIMITATIONS, ...runner.limitations],
           locations: [
@@ -227,7 +231,7 @@ export class IdaSessionClient implements AnalysisClient {
     return ok(
       createAnalysisExecution(
         {
-          ready: true,
+          ready: idaAnalysisReady(this.config.mode, metadata),
           mode: this.config.mode,
           database: this.#database ?? null,
           upstream: this.connection.serverInfo(),
@@ -366,10 +370,6 @@ export class IdaSessionClient implements AnalysisClient {
       )
         throw new AnalysisProtocolError(
           "IDA headless input identity changed after target admission.",
-        );
-      if (metadata.auto_analysis_ready !== true)
-        throw new AnalysisProtocolError(
-          "IDA auto-analysis is incomplete or readiness is unknown; retry after analysis completes.",
         );
       identity = JSON.stringify([
         this.#database,

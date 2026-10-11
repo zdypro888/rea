@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, constants } from "node:fs";
-import { copyFile } from "node:fs/promises";
+import { copyFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, normalize } from "node:path";
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
@@ -40,9 +40,14 @@ export class IdaWorkspace {
     root = tmpdir(),
   ): Promise<IdaWorkspace> {
     const runtime = await PrivateRuntimeRoot.create({
-      parent: normalize(root),
+      // Canonicalize before allocating so a failed resolution cannot orphan
+      // an already allocated private directory.
+      parent: await realpath(normalize(root)),
       prefix: "rea-ida-",
     });
+    // The supervisor resolves symlinks. Bind the owned directory's canonical
+    // path before admission (e.g. macOS /var -> /private/var), not by weakening
+    // target identity checks after it opens.
     const inputPath = join(runtime.path, basename(target.path));
     return new IdaWorkspace(runtime, inputPath, target);
   }

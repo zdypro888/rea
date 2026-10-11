@@ -58,7 +58,16 @@ const fixture = async (redirectUrl?: string, cycle = false) => {
               tools: [
                 {
                   name: input.params?.cursor === undefined ? "first" : "second",
-                  inputSchema: { type: "object", properties: {} },
+                  inputSchema: {
+                    type: "object",
+                    properties:
+                      input.params?.cursor === undefined
+                        ? { addr: { type: "string" } }
+                        : {
+                            offset: { type: "integer" },
+                            max_lines: { type: "integer" },
+                          },
+                  },
                 },
               ],
               ...(input.params?.cursor === undefined
@@ -110,6 +119,12 @@ const fixture = async (redirectUrl?: string, cycle = false) => {
 it("uses the pinned SDK for a local Streamable HTTP handshake, paged discovery, structured results, and configured authentication", async () => {
   const { connection, methods, headers } = await fixture();
   expect(await connection.connect()).toEqual(["first", "second"]);
+  expect(connection.toolParameters?.("first")).toEqual(["addr"]);
+  expect(connection.toolParameters?.("second")).toEqual([
+    "offset",
+    "max_lines",
+  ]);
+  expect(connection.toolParameters?.("missing")).toBeUndefined();
   expect(connection.serverInfo()).toEqual({
     name: "ida-transport-fixture",
     version: "observed-server-version",

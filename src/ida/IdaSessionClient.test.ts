@@ -15,7 +15,10 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-const fixture = async (mode: "attached" | "headless" = "attached") => {
+const fixture = async (
+  mode: "attached" | "headless" = "attached",
+  timeoutMs = 1000,
+) => {
   const { root, target } = await createIdaTarget();
   roots.push(root);
   const producer = new RecordingIdaMcp(target, mode);
@@ -25,7 +28,7 @@ const fixture = async (mode: "attached" | "headless" = "attached") => {
       args: [],
       env: {},
       mode,
-      timeoutMs: 1000,
+      timeoutMs,
       workspaceRoot: root,
     },
     target,
@@ -34,7 +37,298 @@ const fixture = async (mode: "attached" | "headless" = "attached") => {
   return { root, target, producer, client };
 };
 
+const recoveryFixture = async (timeoutMs = 1000) => {
+  const state = await fixture("headless", timeoutMs);
+  let ready = true;
+  let queries = 0;
+  const health = () => ({
+    status: "ok",
+    input_path: state.producer.inputPath,
+    idb_path: `${state.producer.inputPath}.i64`,
+    module: "target.elf",
+    imagebase: state.producer.imageBase,
+    auto_analysis_ready: ready,
+  });
+  state.producer.toolParameters = (name) =>
+    name === "analysis_advance" ? ["budget_ms", "database"] : undefined;
+  state.producer.overrideCall = (name, args) => {
+    if (name === "server_health") return health();
+    if (name === "decompile") {
+      queries++;
+      if (queries === 1) ready = false;
+      return {
+        code: queries === 1 ? "stale result" : "stable result",
+        cursor: { done: true },
+      };
+    }
+    if (name === "analysis_advance") {
+      expect(args.database).toBe(state.producer.database);
+      expect(args.budget_ms).toBeGreaterThan(0);
+      expect(args.budget_ms).toBeLessThanOrEqual(100);
+      ready = true;
+      return { steps: 1, health: health() };
+    }
+    return undefined;
+  };
+  return {
+    ...state,
+    health,
+    setReady: (value: boolean) => {
+      ready = value;
+    },
+    queries: () => queries,
+  };
+};
+
+describe("headless IDA analysis recovery", () => {
+  it("does not accept health when the caller cancels during the probe", async () => {
+    const { producer, client } = await recoveryFixture();
+    const controller = new AbortController();
+    producer.beforeCall = async (name) => {
+      if (name === "server_health") controller.abort();
+    };
+    try {
+      const result = await client.execute(
+        "health",
+        {},
+        { signal: controller.signal },
+      );
+      expect(!result.ok && result.error._tag).toBe("AnalysisCancelledError");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("does not rerun a query after a late successful advance exhausted the recovery budget", async () => {
+    const { producer, client, queries } = await recoveryFixture(5);
+    producer.beforeCall = async (name) => {
+      if (name === "analysis_advance")
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    };
+    try {
+      const result = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      expect(!result.ok && result.error._tag).toBe("AnalysisTimeoutError");
+      expect(queries()).toBe(1);
+    } finally {
+      await client.close();
+    }
+  });
+  it.each(["unknown", "no-progress", "wrong-advance-identity"] as const)(
+    "rejects %s rather than claiming a stable result",
+    async (failure) => {
+      const { producer, client, health, setReady, queries } =
+        await recoveryFixture();
+      setReady(false);
+      producer.overrideCall = (name) => {
+        if (name === "server_health")
+          return failure === "unknown"
+            ? { ...health(), auto_analysis_ready: null }
+            : health();
+        if (name === "analysis_advance") {
+          if (failure === "wrong-advance-identity") {
+            setReady(true);
+            return { steps: 1, health: { ...health(), imagebase: "0x8000" } };
+          }
+          return { steps: 0, health: health() };
+        }
+        return undefined;
+      };
+      try {
+        const result = await client.execute("procedure_pseudo_code", {
+          procedure: "main",
+        });
+        expect(result.ok).toBe(false);
+        expect(queries()).toBe(0);
+        if (!result.ok) {
+          if (failure === "no-progress")
+            expect(result.error._tag).toBe("ProviderAdapterError");
+          else expect(result.error._tag).toBe("AnalysisProtocolError");
+        }
+        if (failure === "unknown")
+          expect(
+            producer.calls.some(({ name }) => name === "analysis_advance"),
+          ).toBe(false);
+      } finally {
+        await client.close();
+      }
+    },
+  );
+  it("advances only its bound worker and reruns a query rather than accepting stale pseudocode", async () => {
+    const { producer, client, queries } = await recoveryFixture();
+    try {
+      const result = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      if (!result.ok) throw result.error;
+      expect(result.value.result).toBe("stable result");
+      expect(queries()).toBe(2);
+      expect(result.value.rawResult).toHaveProperty("analysis_recovery");
+      expect(producer.calls.some(({ name }) => name === "idb_close")).toBe(
+        false,
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("reports pending health without mutating analysis and explicitly rejects backends missing the advance tool", async () => {
+    const { producer, client, setReady, queries } = await recoveryFixture();
+    setReady(false);
+    producer.toolParameters = () => undefined;
+    try {
+      const health = await client.execute("health", {});
+      if (!health.ok) throw health.error;
+      expect(health.value.result).toHaveProperty("ready", false);
+      const result = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      expect(!result.ok && result.error._tag).toBe(
+        "AnalysisCapabilityUnavailableError",
+      );
+      expect(queries()).toBe(0);
+      expect(
+        producer.calls.some(({ name }) => name === "analysis_advance"),
+      ).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("rejects a target switch during advancement before rerunning the original query", async () => {
+    const { producer, client, queries } = await recoveryFixture();
+    producer.beforeCall = async (name) => {
+      if (name === "analysis_advance") producer.imageBase = "0x9000";
+    };
+    try {
+      const result = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      expect(!result.ok && result.error.message).toContain(
+        "target or image base changed",
+      );
+      expect(queries()).toBe(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("honors the recovery deadline without deleting queued analysis", async () => {
+    const { producer, client, health, setReady } = await recoveryFixture(5);
+    const original = producer.overrideCall;
+    producer.overrideCall = (name, args) => {
+      if (name === "analysis_advance") {
+        setReady(false);
+        return { steps: 1, health: health() };
+      }
+      return original?.(name, args);
+    };
+    producer.beforeCall = async (name) => {
+      if (name === "analysis_advance")
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    };
+    try {
+      const result = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      expect(!result.ok && result.error._tag).toBe("AnalysisTimeoutError");
+      expect(producer.calls.some(({ name }) => name === "idb_close")).toBe(
+        false,
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("drains a cancelled advance and does not start a second query or close the worker", async () => {
+    const { producer, client, queries } = await recoveryFixture();
+    const controller = new AbortController();
+    producer.beforeCall = async (name) => {
+      if (name === "analysis_advance") controller.abort();
+    };
+    try {
+      const result = await client.execute(
+        "procedure_pseudo_code",
+        { procedure: "main" },
+        { signal: controller.signal },
+      );
+      expect(!result.ok && result.error._tag).toBe("AnalysisCancelledError");
+      expect(queries()).toBe(1);
+      expect(producer.calls.some(({ name }) => name === "idb_close")).toBe(
+        false,
+      );
+    } finally {
+      await client.close();
+    }
+  });
+});
+
 describe("headless IDA producer pagination", () => {
+  it("uses declared unpaged decompilation without sending unsupported paging arguments", async () => {
+    const { producer, client } = await fixture("headless");
+    producer.toolParameters = (name) =>
+      name === "decompile"
+        ? ["addr", "include_addresses", "database"]
+        : undefined;
+    producer.overrideCall = (name, args) => {
+      if (name !== "decompile") return undefined;
+      expect(args).not.toHaveProperty("offset");
+      expect(args).not.toHaveProperty("max_lines");
+      expect(args.database).toBe(producer.database);
+      return { addr: "0x1000", code: "first line\nsecond line" };
+    };
+    try {
+      const result = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      if (!result.ok) throw result.error;
+      expect(result.value.result).toBe("first line\nsecond line");
+      expect(
+        producer.calls.filter(({ name }) => name === "decompile"),
+      ).toHaveLength(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("rejects partial paging declarations and does not infer completeness from an undeclared cursor", async () => {
+    const { producer, client } = await fixture("headless");
+    producer.toolParameters = () => ["addr", "offset"];
+    try {
+      const partial = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      expect(partial.ok).toBe(false);
+      if (!partial.ok)
+        expect(partial.error.message).toContain("partial decompile pagination");
+      expect(producer.calls.some(({ name }) => name === "decompile")).toBe(
+        false,
+      );
+      producer.toolParameters = () => ["addr"];
+      producer.overrideCall = (name) =>
+        name === "decompile"
+          ? { addr: "0x1000", code: "preview", cursor: { next: 100 } }
+          : undefined;
+      const preview = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      expect(!preview.ok && preview.error._tag).toBe("AnalysisOutputError");
+      producer.overrideCall = (name) =>
+        name === "decompile"
+          ? { addr: "0x2000", code: "wrong function" }
+          : undefined;
+      const mismatch = await client.execute("procedure_pseudo_code", {
+        procedure: "main",
+      });
+      expect(!mismatch.ok && mismatch.error.message).toContain(
+        "different function",
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
   it("follows reported cursors for modern inventories, pseudocode, and bare-hex assembly without losing pages", async () => {
     const { producer, client } = await fixture("headless");
     producer.overrideCall = (name, args) => {

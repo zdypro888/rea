@@ -23,6 +23,7 @@ import {
   legacyXrefsSchema,
   modernCalleesSchema,
   modernDecompileSchema,
+  unpagedDecompileSchema,
   modernDisassemblySchema,
   modernLookupSchema,
   modernPageSchema,
@@ -216,6 +217,29 @@ export class IdaOperationRunner {
         .string()
         .nullable()
         .parse(await this.call("decompile_function", { address: fn.address }));
+    const parameters = this.connection.toolParameters?.("decompile");
+    if (parameters !== undefined) {
+      const hasOffset = parameters.includes("offset");
+      const hasLimit = parameters.includes("max_lines");
+      if (hasOffset !== hasLimit)
+        throw new AnalysisProtocolError(
+          "IDA MCP declares an unsupported partial decompile pagination contract.",
+        );
+      if (!hasOffset) {
+        const value = unpagedDecompileSchema.parse(
+          await this.call("decompile", { addr: fn.address }),
+        );
+        if (value.addr !== fn.address)
+          throw new AnalysisProtocolError(
+            "IDA decompilation identifies a different function than the resolved entry.",
+          );
+        if (value.code === null || value.error !== undefined)
+          throw new AnalysisProtocolError(
+            `IDA decompilation failed: ${value.error ?? "missing code"}`,
+          );
+        return value.code;
+      }
+    }
     const result: string[] = [];
     let offset: number | null = 0;
     while (offset !== null) {
